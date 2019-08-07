@@ -1,0 +1,150 @@
+#!/usr/bin/env ruby
+
+require "bundler/setup"
+require "combine_pdf"
+
+require_relative "../lib/command_parser"
+
+parser = CommandParser.new(__FILE__, ARGV)
+
+if !parser.parse
+  puts "Error: #{parser.error}\n\n"
+
+  puts parser.to_s
+
+  exit(1)
+end
+
+class Signatures
+  def initialize(document, total_pages, pages_per_signature)
+    @document            = document
+    @total_pages         = total_pages
+    @pages_per_signature = pages_per_signature
+  end
+
+  def pages
+    @pages ||= signatures.flat_map(&:pages)
+  end
+
+  private
+
+  def signatures
+    (0...total_signatures).map do |index|
+      Signature.new(@document, @total_pages, @pages_per_signature, index)
+    end
+  end
+
+  def total_signatures
+    (@total_pages.to_f / @pages_per_signature).ceil
+  end
+end
+
+class Signature
+  PAGES_PER_SHEET = 2
+
+  def initialize(source_document, total_pages, pages_per_signature, signature_index)
+    @source_document     = source_document
+    @total_pages         = total_pages
+    @pages_per_signature = pages_per_signature
+    @signature_index     = signature_index
+  end
+
+  def pages
+    pages = page_order.map {|n| puts n; @source_document.page(n) }.compact
+    pages.length.even? ? pages : [blank_page] + pages
+  end
+
+  def first_page_number
+    (page_number_offset + 1).to_i
+  end
+
+  def last_page_number
+    page_number = (page_number_offset + @pages_per_signature).to_i
+    page_number = page_number > @total_pages ? @total_pages : page_number
+    page_number += 1 if page_number.odd?
+    page_number
+  end
+
+  def actual_page_count
+    last_page_number - first_page_number + 1
+  end
+
+  def page_count
+    (actual_page_count.to_f / PAGES_PER_SHEET.to_f).ceil
+  end
+
+  def page_order
+    (0...page_count).flat_map do |index|
+      from_front = first_page_number + index
+      from_back  = last_page_number - index
+
+      index.even? ? [from_back, from_front] : [from_front, from_back]
+    end
+  end
+
+  private
+
+  def page_number_offset
+    (@signature_index * @pages_per_signature)
+  end
+
+  def blank_page
+    CombinePDF.create_page
+  end
+end
+
+class Document
+  def initialize(source_filename, pages_per_signature)
+    @source_filename      = source_filename
+    @pages_per_signature  = pages_per_signature.to_f
+  end
+
+  def page(page_number)
+    source_file.pages[page_number - 1] if page_number <= total_pages
+  end
+
+  def total_pages
+    source_file.pages.length
+  end
+
+  def signatures
+    @signatures ||= Signatures.new(self, total_pages, @pages_per_signature)
+  end
+
+  def save_to(filename)
+    TargetDocument.new(filename, signatures).save
+  end
+
+  def source_file
+    @source_file ||= CombinePDF.load(@source_filename)
+  end
+end
+
+class TargetDocument
+  PAGES_PER_SHEET = 2 # Take this from Signatures class?
+
+  def initialize(filename, signatures)
+    @filename   = filename
+    @signatures = signatures
+  end
+
+  def save
+    output = CombinePDF.new
+    @signatures.pages.each {|p| output << p }
+    output.save(@filename)
+  end
+
+  private
+
+  # def x
+  #   {
+  #     0 => [],
+  #     1 => []
+  #   }
+end
+
+
+
+
+document = Document.new(parser.source, parser.pages_per_signature)
+document.save_to(parser.dest)
